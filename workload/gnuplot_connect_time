@@ -1,0 +1,30 @@
+# Let’s output to a jpeg file
+set terminal jpeg size 1280,720
+# The file we’ll write to
+set output "results/connect_time.jpg"
+# The graph title
+set title "Benchmark testing"
+# Where to place the legend/key
+set key left top
+
+# Each bar is half the (visual) width of its x-range.
+set boxwidth 0.05 absolute
+set style fill solid 1.0 noborder
+
+bin_width = 0.1;
+
+bin_number(x) = floor(x/bin_width)
+
+rounded(x) = bin_width * ( bin_number(x) + 0.5 )
+
+# Label the y-axis
+set xlabel "response time (ms)"
+
+stats "results/stats" using 7 nooutput name 'X_'
+set label 1 sprintf("Max=%d", X_max) at X_max offset -4,-2
+set label 2 sprintf("Min=%d", X_min) at X_min offset 1,-1
+
+# Plot the data
+plot "results/stats" using (rounded($7)):(1) title 'connect time' smooth frequency with boxes
+
+exit

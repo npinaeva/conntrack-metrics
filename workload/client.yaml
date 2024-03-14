@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: client-{{.Replica}}
+  labels:
+    app: client
+spec:
+  enableServiceLinks: false
+  tolerations:
+    - key: "node-role.kubernetes.io/control-plane"
+      operator: "Exists"
+      effect: "NoSchedule"
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: DoNotSchedule
+      labelSelector:
+        matchLabels:
+          app: client
+  containers:
+  - name: ab
+    image: httpd:2
+{{- $svcIdx := mod .Replica .services}}
+{{- if gt .services .clients }}
+  {{- $svcIdx = sub (mul (div .services .clients) .Replica) 1 }}
+{{- end}}
+{{- $thirdOct := add (div $svcIdx 250) 1 }}
+{{- $fourthOct := add (mod $svcIdx 250) 1 }}
+    command: ["bash", "-c", "ab -n {{.conn_per_client}} -c {{.concurrency}} -g output -l -v 1 http://10.96.{{$thirdOct}}.{{$fourthOct}}:80/; cat output"]
+  restartPolicy: Never

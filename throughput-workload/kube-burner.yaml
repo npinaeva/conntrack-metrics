@@ -1,0 +1,42 @@
+global:
+  gc: true
+  requestTimeout: 300s
+jobs:
+  - name: backends
+    namespace: workload
+    preLoadImages: false
+    jobIterations: 1
+    podWait: true
+    objects:
+      - objectTemplate: backend.yaml
+        replicas: 1
+        inputVars:
+          backends: {{.BACKENDS}}
+  - name: services
+    namespace: workload
+    preLoadImages: false
+    jobIterations: 1
+    jobPause: 10s
+    qps: 100
+    burst: 100
+    objects:
+      - objectTemplate: service.yaml
+        replicas: {{.SERVICES}}
+      - objectTemplate: svc_waiter.yaml
+        replicas: 1
+        inputVars:
+          services: {{.SERVICES}}
+    waitWhenFinished: true
+  - name: clients
+    namespace: workload-client
+    preLoadImages: false
+    jobIterations: 1
+    jobPause: "{{.JOB_PAUSE}}"
+    beforeCleanup: "save_logs.sh"
+    waitWhenFinished: false
+    objects:
+      - objectTemplate: client.yaml
+        replicas: {{.CLIENTS}}
+        inputVars:
+          services: {{.SERVICES}}
+          clients: {{.CLIENTS}}

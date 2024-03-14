@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -a
+# may be also set from the terminal env
+KUBECONFIG=/home/nadia/.kube/config2
+BACKENDS=2
+# max 250*250=62500 services
+SERVICES=10000
+CLIENTS=10
+# after everything is done, wait for JOB_PAUSE before cleaning up.
+# may be useful to check some metrics after the test is done or for debugging.
+JOB_PAUSE=2h
+
+set +a

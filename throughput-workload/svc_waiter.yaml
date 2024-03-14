@@ -1,0 +1,22 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: waiter
+spec:
+  completions: 1
+  parallelism: 1
+  template:
+    spec:
+      enableServiceLinks: false
+      tolerations:
+        - key: "node-role.kubernetes.io/control-plane"
+          operator: "Exists"
+          effect: "NoSchedule"
+      containers:
+      - name: waiter
+        image:  registry.k8s.io/e2e-test-images/agnhost:2.43
+        {{- $svcIdx := sub .services 1 }}
+        {{- $thirdOct := add (div $svcIdx 250) 1 }}
+        {{- $fourthOct := add (mod $svcIdx 250) 1 }}
+        command: ["bash", "-c", "for j in {1..{{$thirdOct}}}; do for i in {1..1000}; do sleep 1; curl -m 3 10.96.$j.{{$fourthOct}}:80; if [ $? -eq 1 ]; then break; fi; done; echo \" 10.96.$j.{{$fourthOct}} Succeeded\"; done; exit 0"]
+      restartPolicy: Never
