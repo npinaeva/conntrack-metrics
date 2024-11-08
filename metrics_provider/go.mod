@@ -30,3 +30,5 @@ require (
 	k8s.io/klog/v2 v2.110.1 // indirect
 	k8s.io/utils v0.0.0-20230726121419-3b25d923346b // indirect
 )
+
+replace github.com/ti-mo/conntrack v0.5.1 => github.com/npinaeva/conntrack v0.0.0-20241108172424-ee9b030a861d

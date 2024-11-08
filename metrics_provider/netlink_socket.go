@@ -6,7 +6,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
-	"time"
 	"unsafe"
 )
 
@@ -58,17 +57,17 @@ type MmsgHdr struct {
 	MsgLen uint64
 }
 
-func (s *NetlinkSocket) RecvMsgs(flags int, hs, hslen uintptr) (int, time.Time, error) {
+func (s *NetlinkSocket) RecvMsgs(flags int, hs, hslen uintptr) (int, error) {
 	fd := int(atomic.LoadInt32(&s.fd))
 	if fd < 0 {
-		return 0, time.Time{}, fmt.Errorf("Receive called on a closed socket")
+		return 0, fmt.Errorf("Receive called on a closed socket")
 	}
 	return recvmmsg(uintptr(fd), hs, hslen, flags)
 }
 
-func recvmmsg(s uintptr, hs, hslen uintptr, flags int) (int, time.Time, error) {
+func recvmmsg(s uintptr, hs, hslen uintptr, flags int) (int, error) {
 	n, _, errno := syscall.Syscall6(syscall.SYS_RECVMMSG, s, hs, hslen, uintptr(flags), 0, 0)
-	return int(n), time.Now(), errnoErr(errno)
+	return int(n), errnoErr(errno)
 }
 
 var (

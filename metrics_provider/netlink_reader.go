@@ -20,7 +20,6 @@ type bufs struct {
 	hsptr   uintptr
 	hslen   uintptr
 	n       int
-	ts      time.Time
 	err     error
 }
 
@@ -44,7 +43,6 @@ func newBufs(size int) *bufs {
 }
 
 type TsMsgs struct {
-	Ts   time.Time
 	Msgs []*syscall.NetlinkMessage
 }
 
@@ -61,7 +59,10 @@ type NetlinkReader struct {
 }
 
 func NewNetlinkReader(socketBufSizeMB, eventQueueSize, recmmsgBatchSize, bufsPerWorker int, nodeName string) (*NetlinkReader, error) {
-	conn, err := Subscribe(unix.NETLINK_NETFILTER, uint(netfilter.GroupCTUpdate), uint(netfilter.GroupCTDestroy))
+	conn, err := Subscribe(unix.NETLINK_NETFILTER,
+		uint(netfilter.GroupCTNew),
+		uint(netfilter.GroupCTUpdate),
+		uint(netfilter.GroupCTDestroy))
 	if err != nil {
 		return nil, err
 	}
@@ -88,7 +89,7 @@ func NewNetlinkReader(socketBufSizeMB, eventQueueSize, recmmsgBatchSize, bufsPer
 
 }
 
-func (r *NetlinkReader) StartWorkers(ctx context.Context, numWorkers int) error {
+func (r *NetlinkReader) StartWorkers(ctx context.Context, numReceivers, numWorkers int) error {
 	defer r.stop()
 
 	r.emptyBufs, r.fullBufs = make(chan *bufs, numWorkers*r.bufsPerWorker), make(chan *bufs, numWorkers*r.bufsPerWorker)
@@ -100,7 +101,10 @@ func (r *NetlinkReader) StartWorkers(ctx context.Context, numWorkers int) error 
 	log.Printf("%d netlink workers started\n", numWorkers)
 	// let workers add empty buffers
 	time.Sleep(time.Second)
-	go r.receiver(ctx)
+	for i := 0; i < numReceivers; i++ {
+		go r.receiver(ctx, i)
+	}
+	log.Printf("%d netlink receivers started\n", numReceivers)
 
 	select {
 	case err := <-r.errChan:
@@ -115,14 +119,15 @@ func (r *NetlinkReader) stop() {
 	r.socket.Close()
 }
 
-func (r *NetlinkReader) receiver(ctx context.Context) {
+func (r *NetlinkReader) receiver(ctx context.Context, id int) {
 	for {
 		select {
 		case emptyBuf := <-r.emptyBufs:
-			emptyBuf.n, emptyBuf.ts, emptyBuf.err = r.socket.RecvMsgs(syscall.MSG_WAITFORONE, emptyBuf.hsptr, emptyBuf.hslen)
+			emptyBuf.n, emptyBuf.err = r.socket.RecvMsgs(syscall.MSG_WAITFORONE, emptyBuf.hsptr, emptyBuf.hslen)
 			r.rcvMsgCounter.Add(int64(emptyBuf.n))
 			r.fullBufs <- emptyBuf
 		case <-ctx.Done():
+			log.Printf("Stopping receiver %v", id)
 			return
 		case <-r.errChan:
 			return
@@ -176,7 +181,6 @@ func (r *NetlinkReader) msgParser(ctx context.Context, workerID int) {
 				}
 			}
 			r.EventChan <- &TsMsgs{
-				Ts:   fullBuf.ts,
 				Msgs: msgs,
 			}
 			r.emptyBufs <- fullBuf

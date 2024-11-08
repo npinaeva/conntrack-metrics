@@ -15,11 +15,6 @@ import (
 	"github.com/ti-mo/conntrack"
 )
 
-type tsConntrackEvent struct {
-	event *conntrack.Event
-	ts    time.Time
-}
-
 func eventTypeString(t uint8) string {
 	switch t {
 	case 1:
@@ -34,7 +29,7 @@ func eventTypeString(t uint8) string {
 }
 
 func printEvent(event *conntrack.Event) {
-	log.Printf("Event %s, flow: %+v, TCP: %+v", event.Type, event.Flow, event.Flow.ProtoInfo.TCP)
+	log.Printf("ts: %v\n event %s, flow: %+v, TCP: %+v, TupleOrig: %+v \n", event.Type, event.Flow, event.Flow.ProtoInfo.TCP, event.Flow.TupleOrig)
 }
 
 type EventsHandler struct {
@@ -92,20 +87,13 @@ func (h *EventsHandler) dispatch(ctx context.Context, c chan *TsMsgs, id int) {
 						"Event %+v", netlinkMsg, err, event)
 					continue
 				}
-				//if h.printEvents {
-				//	printEvent(event)
-				//}
 
 				if h.interestingEvent(event) {
 					// send same flow to the same queueNum to ensure correct events ordering
 					queueNum := event.Flow.ID % uint32(nWorkers)
-					h.workers[queueNum].eventQueue <- &tsConntrackEvent{
-						event: event,
-						ts:    msgs.Ts,
-					}
+					h.workers[queueNum].eventQueue <- event
 					MetricConntrackEventsCounter.WithLabelValues(h.nodeName, eventTypeString(uint8(event.Type))).Inc()
 					MetricDispatchTime.WithLabelValues(h.nodeName).Observe(time.Now().Sub(startTime).Seconds())
-					MetricEventTillWorkerQueueTime.WithLabelValues(h.nodeName, eventTypeString(uint8(event.Type))).Observe(time.Now().Sub(msgs.Ts).Seconds())
 				}
 			}
 		case <-ctx.Done():
@@ -123,9 +111,7 @@ func sysToHeader(r syscall.NlMsghdr) netlink.Header {
 func (h *EventsHandler) interestingEvent(event *conntrack.Event) bool {
 	return event.Flow != nil &&
 		h.svcSubnet.Contains(event.Flow.TupleOrig.IP.DestinationAddress) &&
-		(h.excludeSubnet == nil || !h.excludeSubnet.Contains(event.Flow.TupleOrig.IP.DestinationAddress)) &&
-		(event.Type == conntrack.EventUpdate && event.Flow.TupleOrig.IP.DestinationAddress != event.Flow.TupleReply.IP.SourceAddress ||
-			event.Type == conntrack.EventDestroy && !event.Flow.Timestamp.Stop.IsZero())
+		(h.excludeSubnet == nil || !h.excludeSubnet.Contains(event.Flow.TupleOrig.IP.DestinationAddress))
 }
 
 func (h *EventsHandler) recordQueueSize(ctx context.Context, workerQueueSize float64) {
@@ -200,7 +186,7 @@ type worker struct {
 	nodeName    string
 	printEvents bool
 	flowInfos   map[uint32]*flowInfo
-	eventQueue  chan *tsConntrackEvent
+	eventQueue  chan *conntrack.Event
 	readyFlows  chan uint32
 	waitQueue   chan uint32
 }
@@ -210,7 +196,7 @@ func newWorker(nodeName string, printEvents bool, workerQueueSize int) *worker {
 		nodeName:    nodeName,
 		printEvents: printEvents,
 		flowInfos:   map[uint32]*flowInfo{},
-		eventQueue:  make(chan *tsConntrackEvent, workerQueueSize),
+		eventQueue:  make(chan *conntrack.Event, workerQueueSize),
 		readyFlows:  make(chan uint32, workerQueueSize),
 		waitQueue:   make(chan uint32, workerQueueSize),
 	}
@@ -252,17 +238,16 @@ func (w *worker) scheduleRecording(flowID uint32) {
 	w.waitQueue <- flowID
 }
 
-func (w *worker) handleConntrackEvent(event *tsConntrackEvent) {
+func (w *worker) handleConntrackEvent(event *conntrack.Event) {
 	handlerStart := time.Now()
 	defer func() {
-		eventType := eventTypeString(uint8(event.event.Type))
+		eventType := eventTypeString(uint8(event.Type))
 		MetricHandlingTime.WithLabelValues(w.nodeName, eventType).Observe(time.Now().Sub(handlerStart).Seconds())
-		MetricEventInSystemTime.WithLabelValues(w.nodeName, eventType).Observe(time.Now().Sub(event.ts).Seconds())
 	}()
 
-	flow := event.event.Flow
+	flow := event.Flow
 	if w.printEvents {
-		printEvent(event.event)
+		printEvent(event)
 	}
 	fi, ok := w.flowInfos[flow.ID]
 	if !ok {
@@ -271,20 +256,14 @@ func (w *worker) handleConntrackEvent(event *tsConntrackEvent) {
 		}
 		w.flowInfos[flow.ID] = fi
 	}
-	if event.event.Type == conntrack.EventDestroy {
+	if event.Type == conntrack.EventDestroy {
 		if !flow.Timestamp.Stop.IsZero() {
-			connectionLifetime := flow.Timestamp.Stop.Sub(flow.Timestamp.Start)
-			MetricSvcDuration.WithLabelValues(w.nodeName).Observe(connectionLifetime.Seconds())
 			MetricSvcPacketsHist.WithLabelValues(w.nodeName, "to-svc").Observe(float64(flow.CountersOrig.Packets))
 			MetricSvcPacketsHist.WithLabelValues(w.nodeName, "from-svc").Observe(float64(flow.CountersReply.Packets))
 			MetricSvcBytesHist.WithLabelValues(w.nodeName, "to-svc").Observe(float64(flow.CountersOrig.Bytes))
 			MetricSvcBytesHist.WithLabelValues(w.nodeName, "from-svc").Observe(float64(flow.CountersReply.Bytes))
 
 			fi.eventRecords = append(fi.eventRecords,
-				&eventRecord{
-					ts:    flow.Timestamp.Start,
-					event: created,
-				},
 				&eventRecord{
 					ts:           flow.Timestamp.Stop,
 					event:        deleted,
@@ -295,18 +274,31 @@ func (w *worker) handleConntrackEvent(event *tsConntrackEvent) {
 			w.scheduleRecording(flow.ID)
 		}
 	}
-	if event.event.Type == conntrack.EventUpdate {
+
+	if event.Type == conntrack.EventNew {
+		fi.eventRecords = append(fi.eventRecords,
+			&eventRecord{
+				ts:    flow.TimestampEvent,
+				event: created,
+			},
+		)
+	}
+
+	if event.Type == conntrack.EventUpdate {
 		tcpState := getTCPState(flow)
-		if tcpState == 2 || tcpState == 0 && event.event.Flow.Status.SeenReply() && !event.event.Flow.Status.Assured() {
+		if tcpState == 2 || tcpState == 0 && event.Flow.Status.SeenReply() && !event.Flow.Status.Assured() {
+			if tcpState == 0 {
+				log.Println("UDP")
+			}
 			fi.eventRecords = append(fi.eventRecords, &eventRecord{
-				ts:     event.ts,
+				ts:     flow.TimestampEvent,
 				event:  seenReply,
 				nonTCP: tcpState == 0,
 			})
 		}
 		if tcpState == 4 {
 			fi.eventRecords = append(fi.eventRecords, &eventRecord{
-				ts:    event.ts,
+				ts:    flow.TimestampEvent,
 				event: tcpFin,
 			})
 		}
@@ -317,22 +309,9 @@ func correctNonTCPEvents(events []*eventRecord) bool {
 	return len(events) > 2 && events[0].event == created && events[1].event == seenReply && events[1].nonTCP == true && events[2].event == deleted
 }
 
-// return correct, tcpFinIdx, deleteIdx
-func correctTCPEvents(events []*eventRecord) (bool, int, int) {
-	correct := len(events) > 3 && events[0].event == created && events[1].event == seenReply &&
-		(events[2].event == tcpFin && events[3].event == deleted ||
-			events[3].event == tcpFin && events[2].event == deleted)
-	if !correct {
-		return false, -1, -1
-	}
-	// tcpFin was recorded after kernel delete timestamp, may happen because of delay
-	tcpFinIdx := 2
-	deleteIdx := 3
-	if events[3].event == tcpFin && events[2].event == deleted {
-		tcpFinIdx = 3
-		deleteIdx = 2
-	}
-	return true, tcpFinIdx, deleteIdx
+func correctTCPEvents(events []*eventRecord) bool {
+	return len(events) > 3 && events[0].event == created && events[1].event == seenReply &&
+		events[2].event == tcpFin && events[3].event == deleted
 }
 
 func (w *worker) recordMetrics(flowID uint32) {
@@ -363,12 +342,19 @@ func (w *worker) recordMetrics(flowID uint32) {
 		MetricSvcSeenReplyLatencySummary.WithLabelValues(w.nodeName).Observe(establishedLatency.Seconds())
 
 		fi.eventRecords = fi.eventRecords[3:]
-	} else if tcpEvents, tcpFinIdx, deleteIdx := correctTCPEvents(fi.eventRecords); tcpEvents {
-		establishedLatency := fi.eventRecords[1].ts.Sub(fi.eventRecords[0].ts)
+	} else if correctTCPEvents(fi.eventRecords) {
+		createdIdx := 0
+		seenReplyIdx := 1
+		tcpFinIdx := 2
+		deleteIdx := 3
+		connectionLifetime := fi.eventRecords[deleteIdx].ts.Sub(fi.eventRecords[createdIdx].ts)
+		MetricSvcDuration.WithLabelValues(w.nodeName).Observe(connectionLifetime.Seconds())
+
+		establishedLatency := fi.eventRecords[seenReplyIdx].ts.Sub(fi.eventRecords[createdIdx].ts)
 		MetricSvcSeenReplyLatency.WithLabelValues(w.nodeName).Observe(establishedLatency.Seconds())
 		MetricSvcSeenReplyLatencySummary.WithLabelValues(w.nodeName).Observe(establishedLatency.Seconds())
 
-		duration := fi.eventRecords[tcpFinIdx].ts.Sub(fi.eventRecords[0].ts)
+		duration := fi.eventRecords[tcpFinIdx].ts.Sub(fi.eventRecords[createdIdx].ts)
 		MetricSvcTCPFinLatency.WithLabelValues(w.nodeName).Observe(duration.Seconds())
 		MetricSvcTCPFinLatencySummary.WithLabelValues(w.nodeName).Observe(duration.Seconds())
 		MetricSvcTCPFinThroughput.WithLabelValues(w.nodeName, "to-svc").Observe(fi.eventRecords[deleteIdx].toSvcBytes / duration.Seconds())
@@ -376,7 +362,7 @@ func (w *worker) recordMetrics(flowID uint32) {
 		MetricSvcTCPFinThroughputSummary.WithLabelValues(w.nodeName, "to-svc").Observe(fi.eventRecords[deleteIdx].toSvcBytes / duration.Seconds())
 		MetricSvcTCPFinThroughputSummary.WithLabelValues(w.nodeName, "from-svc").Observe(fi.eventRecords[deleteIdx].fromSvcBytes / duration.Seconds())
 
-		fi.eventRecords = fi.eventRecords[4:]
+		fi.eventRecords = fi.eventRecords[deleteIdx+1:]
 	} else {
 		deletedIdx := -1
 		for i, er := range fi.eventRecords {

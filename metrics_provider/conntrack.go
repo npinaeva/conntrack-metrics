@@ -92,13 +92,13 @@ func main() {
 	registerMetrics(*nodeName, *summaryTimeout)
 	go startMetricsServer(*metricsBindAddress, ctx)
 
-	reader, err := NewNetlinkReader(50, 50000, 50, 50, *nodeName)
+	reader, err := NewNetlinkReader(200, 200000, 150, 200, *nodeName)
 	if err != nil {
 		log.Fatal(err)
 	}
 	handler := NewEventsHandler(svcPrefix, excludePrefix, *nodeName, *printEvents)
-	handler.Start(ctx, 1, 5, 50000, reader.EventChan)
-	if err = reader.StartWorkers(ctx, 10); err != nil {
+	handler.Start(ctx, 2, 5, 50000, reader.EventChan)
+	if err = reader.StartWorkers(ctx, 5, 10); err != nil {
 		log.Println(err)
 		cancel()
 	}

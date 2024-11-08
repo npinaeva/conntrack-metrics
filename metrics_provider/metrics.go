@@ -147,26 +147,6 @@ var MetricHandlingTime = prometheus.NewHistogramVec(
 	[]string{"node", "type"},
 )
 
-var MetricEventInSystemTime = prometheus.NewHistogramVec(
-	prometheus.HistogramOpts{
-		Namespace: "conntrack_monitoring",
-		Name:      "event_in_system_time_second",
-		Help:      "Time spent by event in system before being fully processed",
-		Buckets:   []float64{0.000001, 0.00001, .0001, 0.001, 0.01, 0.1, 0.5, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
-	},
-	[]string{"node", "type"},
-)
-
-var MetricEventTillWorkerQueueTime = prometheus.NewHistogramVec(
-	prometheus.HistogramOpts{
-		Namespace: "conntrack_monitoring",
-		Name:      "event_till_worker_queue_time_second",
-		Help:      "Time spent by event in system before being processed by worker",
-		Buckets:   []float64{0.000001, 0.00001, .0001, 0.001, 0.01, 0.1, 0.5, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
-	},
-	[]string{"node", "type"},
-)
-
 var MetricRcvMsgsSpeed = prometheus.NewHistogramVec(
 	prometheus.HistogramOpts{
 		Namespace: "conntrack_monitoring",
@@ -228,8 +208,8 @@ func registerMetrics(nodeName string, summaryTimeout int) {
 
 	for _, hist := range []*prometheus.HistogramVec{MetricSvcBytesHist, MetricSvcPacketsHist, MetricSvcDuration,
 		MetricSvcSeenReplyLatency, MetricSvcTCPFinLatency, MetricHandlingTime, MetricDispatchTime,
-		MetricConntrackQueueSizeHist, MetricConntrackWorkerQueueSizeHist, MetricEventInSystemTime,
-		MetricConntrackBatchSizeHist, MetricEventTillWorkerQueueTime, MetricRcvMsgsSpeed, MetricSvcTCPFinThroughput} {
+		MetricConntrackQueueSizeHist, MetricConntrackWorkerQueueSizeHist,
+		MetricConntrackBatchSizeHist, MetricRcvMsgsSpeed, MetricSvcTCPFinThroughput} {
 		hist.Reset()
 		conntrackRegistry.MustRegister(hist)
 	}
